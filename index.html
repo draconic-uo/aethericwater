@@ -156,6 +156,45 @@
   </div>
 
   <script>
+    // Global error banner to avoid blank page on runtime errors
+    (function(){
+      function createBanner(){
+        const el = document.createElement('div');
+        el.id = 'errorBanner';
+        el.style.position = 'fixed';
+        el.style.left = '16px';
+        el.style.right = '16px';
+        el.style.bottom = '16px';
+        el.style.zIndex = '9999';
+        el.style.background = '#4c0519';
+        el.style.color = '#fecdd3';
+        el.style.border = '1px solid #7f1d1d';
+        el.style.borderRadius = '8px';
+        el.style.padding = '10px 12px';
+        el.style.fontFamily = 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, \"Liberation Mono\", \"Courier New\", monospace';
+        el.style.whiteSpace = 'pre-wrap';
+        el.style.boxShadow = '0 6px 24px rgba(0,0,0,0.4)';
+        el.style.display = 'none';
+        document.addEventListener('click', () => { el.style.display = 'none'; }, { once: true });
+        document.body.appendChild(el);
+        return el;
+      }
+      function showError(msg){
+        try {
+          const el = document.getElementById('errorBanner') || createBanner();
+          el.textContent = 'Error: ' + msg + '\n(Click anywhere to dismiss)';
+          el.style.display = 'block';
+        } catch (_) { /* noop */ }
+      }
+      window.addEventListener('error', (e) => {
+        const m = e && e.message ? e.message : String(e);
+        showError(m);
+      });
+      window.addEventListener('unhandledrejection', (e) => {
+        const reason = e && e.reason ? (e.reason.message || String(e.reason)) : 'Unhandled promise rejection';
+        showError(reason);
+      });
+    })();
     function parseInput(text) {
       const lines = text.split(/\r?\n/);
       const result = [];
@@ -725,14 +764,15 @@
 
     function run() {
       // Read and normalize hidden average inputs; fallback to defaults if invalid
-      let avgMin = parseFloat(avgMinEl.value);
-      let avgMax = parseFloat(avgMaxEl.value);
-      if (!Number.isFinite(avgMin)) { avgMin = 6.95; avgMinEl.value = '6.95'; }
-      if (!Number.isFinite(avgMax)) { avgMax = 7.05; avgMaxEl.value = '7.05'; }
+      let avgMin = parseFloat(avgMinEl && avgMinEl.value);
+      let avgMax = parseFloat(avgMaxEl && avgMaxEl.value);
+      if (!Number.isFinite(avgMin)) { avgMin = 6.95; if (avgMinEl) avgMinEl.value = '6.95'; }
+      if (!Number.isFinite(avgMax)) { avgMax = 7.05; if (avgMaxEl) avgMaxEl.value = '7.05'; }
       if (!(avgMin > 0 && avgMax >= avgMin)) {
-        avgMin = 6.95; avgMax = 7.05; avgMinEl.value = '6.95'; avgMaxEl.value = '7.05';
+        avgMin = 6.95; avgMax = 7.05;
+        if (avgMinEl) avgMinEl.value = '6.95';
+        if (avgMaxEl) avgMaxEl.value = '7.05';
       }
-
       const parsed = parseInput(inputEl.value);
       // Show processing indicator and disable button
       if (statsEl) statsEl.textContent = `Parsed: ${parsed.items.length} | Ignored: ${parsed.ignored} | Unique serials: ${parsed.unique} (working…)`;
@@ -744,8 +784,8 @@
       requestAnimationFrame(() => {
         setTimeout(() => {
           try {
-            // Run full optimization 100 times and pick the best
-            const result = multiRunOptimize(parsed.items, avgMin, avgMax, 1000);
+            // Run full optimization 10 times and pick the best
+            const result = multiRunOptimize(parsed.items, avgMin, avgMax, 10);
             outEl.textContent = formatResults(parsed, result);
             // Store last result for copy buttons
             window.__lastResult = result;
@@ -754,10 +794,9 @@
             currentIndex = 0;
             refreshScriptPanel2();
             refreshScriptPanel3();
-          } catch (err) {
-            console.error('Error during optimization:', err);
-            outEl.innerHTML = `<span class="err">An error occurred while generating triples: ${err && err.message ? err.message : err}</span>`;
-            window.__lastResult = { triples: [], leftovers: [] };
+          } catch (e) {
+            console.error(e);
+            outEl.innerHTML = `<span class="err">An error occurred during optimization: ${e && e.message ? e.message : e}</span>`;
             window.__lastTriples = [];
             currentIndex = 0;
             refreshScriptPanel2();
@@ -773,7 +812,7 @@
       });
     }
 
-    document.getElementById('submit').addEventListener('click', run);
+    if (submitBtn) submitBtn.addEventListener('click', run);
 
     // Listeners for second panel
     if (prevSetBtn2) prevSetBtn2.addEventListener('click', () => {
@@ -801,4 +840,3 @@
   </script>
 </body>
 </html>
-
