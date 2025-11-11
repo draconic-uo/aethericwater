@@ -99,7 +99,7 @@
 [11/10/2025 18:16]  [Razor]: aetheric water: 10.681 aP (expires in 1d 13h 56m) [bound to User] 1179412924
 [11/10/2025 18:16]  [Razor]: aetheric water: 10.282 aP (expires in 1d 16h 54m) [bound to User] 1188855198"></textarea>
         <div class="controls">
-          <div class="inline small">
+          <div class="inline small" style="display:none;">
             Target average:
             <input id="avgMin" type="number" step="0.001" value="6.95" style="width: 90px; background:#0b1222; color:var(--text); border:1px solid var(--border); border-radius:6px; padding:6px;"/>
             to
@@ -180,11 +180,9 @@
       return { items: result, ignored, unique: result.length };
     }
 
-    function generateTriples(items, avgMin = 6.95, avgMax = 7.05) {
-      const lower = avgMin * 3;
-      const upper = avgMax * 3;
-      // Clone and sort ascending by value
-      const arr = items.map((x, idx) => ({ ...x, idx, used: false })).sort((a,b) => a.value - b.value);
+    // Core greedy builder given a pre-ordered array of items
+    function greedyTriplesFromOrdered(orderedItems, lower, upper) {
+      const arr = orderedItems.map((x, idx) => ({ ...x, idx, used: false }));
       const triples = [];
 
       function nextLeft(start) {
@@ -227,12 +225,317 @@
 
       const leftovers = arr.filter(x => !x.used).map(({serial, value}) => ({serial, value}));
       const triplesOut = triples.map(tr => tr.map(({serial, value}) => ({serial, value})));
-      return { triples: triplesOut, leftovers, lower, upper };
+      return { triples: triplesOut, leftovers };
+    }
+
+    // Utility: shuffle copy
+    function shuffled(items, rng) {
+      const a = items.slice();
+      for (let i = a.length - 1; i > 0; i--) {
+        const j = Math.floor((rng ? rng() : Math.random()) * (i + 1));
+        [a[i], a[j]] = [a[j], a[i]];
+      }
+      return a;
+    }
+
+    // Build several orderings to try
+    function buildOrderings(items) {
+      const asc = items.slice().sort((a,b) => a.value - b.value);
+      const desc = items.slice().sort((a,b) => b.value - a.value);
+      // Interleave low-high-low-high ...
+      const inter = [];
+      let l = 0, r = asc.length - 1;
+      while (l <= r) {
+        if (l === r) { inter.push(asc[l]); break; }
+        inter.push(asc[l++]);
+        inter.push(asc[r--]);
+      }
+      // Middle-out from asc
+      const midOut = [];
+      const n = asc.length;
+      let left = Math.floor((n - 1) / 2);
+      let right = left + 1;
+      while (left >= 0 || right < n) {
+        if (left >= 0) midOut.push(asc[left--]);
+        if (right < n) midOut.push(asc[right++]);
+      }
+      return [asc, desc, inter, midOut];
+    }
+
+    // Build all candidate triples with sums within [lower, upper]. Returns indices w.r.t. 'items'.
+    function enumerateCandidateTriples(items, lower, upper, cap = 100000, timeMs = 400) {
+      const start = performance.now ? performance.now() : Date.now();
+      const n = items.length;
+      // Work on indices sorted by value to enable two-pointer enumeration
+      const idx = Array.from({length: n}, (_, i) => i).sort((a,b)=>items[a].value - items[b].value);
+      const vals = idx.map(i => items[i].value);
+      const cand = [];
+      let truncated = false;
+      for (let a = 0; a < n - 2; a++) {
+        const va = vals[a];
+        let l = a + 1;
+        let r = n - 1;
+        while (l < r) {
+          const sum = va + vals[l] + vals[r];
+          if (sum < lower) {
+            l++;
+          } else if (sum > upper) {
+            r--;
+          } else {
+            // sum within range; there may be multiple r' in a window
+            // Find lowest r0 >= l+1 that still keeps sum >= lower
+            let rHi = r;
+            // Walk down while still within range to capture all solutions for this l
+            while (l < r && va + vals[l] + vals[r] <= upper && va + vals[l] + vals[r] >= lower) {
+              cand.push([idx[a], idx[l], idx[r]]);
+              if (cand.length >= cap) { truncated = true; return { triples: cand, truncated, timeMs: (performance.now?performance.now():Date.now()) - start }; }
+              r--;
+              if ((performance.now ? performance.now() : Date.now()) - start > timeMs) {
+                return { triples: cand, truncated: true, timeMs: (performance.now?performance.now():Date.now()) - start };
+              }
+            }
+            // restore r to last valid high then advance l
+            r = rHi - 1;
+            l++;
+          }
+        }
+        if ((performance.now ? performance.now() : Date.now()) - start > timeMs) {
+          return { triples: cand, truncated: true, timeMs: (performance.now?performance.now():Date.now()) - start };
+        }
+      }
+      return { triples: cand, truncated, timeMs: (performance.now?performance.now():Date.now()) - start };
+    }
+
+    // Exact/near-exact maximum set packing on 3-sets with branch-and-bound
+    function solveMaxTriples(items, lower, upper, incumbentTriplesIdx = [], timeBudgetMs = 800, candCap = 100000) {
+      const t0 = performance.now ? performance.now() : Date.now();
+      const n = items.length;
+      const theoMax = Math.floor(n / 3);
+
+      // Enumerate candidate triples (indices)
+      const { triples: candTriples, truncated: enumTrunc } = enumerateCandidateTriples(items, lower, upper, candCap, Math.min(400, timeBudgetMs/2));
+      const m = candTriples.length;
+
+      // Quick exit if no candidates
+      if (m === 0) {
+        return { bestIdx: [], optimal: theoMax === 0, visited: 0, timeMs: (performance.now?performance.now():Date.now()) - t0, candCount: m, enumTruncated: enumTrunc };
+      }
+
+      // Build incidence: for each item, list candidate triple indices containing it
+      const incid = Array.from({length: n}, () => []);
+      for (let ci = 0; ci < m; ci++) {
+        const [a,b,c] = candTriples[ci];
+        incid[a].push(ci); incid[b].push(ci); incid[c].push(ci);
+      }
+
+      // Order items by increasing participation (fail-first)
+      const itemOrder = Array.from({length: n}, (_, i) => i).sort((i,j)=>incid[i].length - incid[j].length);
+
+      // Used markers
+      const usedItem = new Uint8Array(n);
+      const bannedTriple = new Uint8Array(m); // optional
+
+      // Start with incumbent from greedy indices set if provided
+      let bestIdx = incumbentTriplesIdx.slice();
+      let bestCount = bestIdx.length;
+      let visited = 0;
+      let optimal = false;
+
+      function timeUp() {
+        return ((performance.now ? performance.now() : Date.now()) - t0) > timeBudgetMs;
+      }
+
+      function canPlaceTriple(ci) {
+        const t = candTriples[ci];
+        return !usedItem[t[0]] && !usedItem[t[1]] && !usedItem[t[2]];
+      }
+
+      function markTriple(ci, v) {
+        const t = candTriples[ci];
+        usedItem[t[0]] = usedItem[t[1]] = usedItem[t[2]] = v ? 1 : 0;
+      }
+
+      // Count of remaining free items for an optimistic upper bound
+      function freeItemsCount(startItemIdx) {
+        let free = 0;
+        for (let k = startItemIdx; k < n; k++) {
+          const it = itemOrder[k];
+          if (!usedItem[it]) free++;
+        }
+        return free;
+      }
+
+      // Depth-first search branching on the next most-constrained free item
+      function dfs(startOrderIdx, chosenIdxArr) {
+        if (timeUp()) return false;
+        visited++;
+        // Upper bound: even if we fill all remaining free items perfectly into triples
+        const remainingMax = Math.floor(freeItemsCount(startOrderIdx) / 3);
+        if (chosenIdxArr.length + remainingMax <= bestCount) {
+          return false; // cannot beat incumbent
+        }
+
+        // Advance to next free item
+        let k = startOrderIdx;
+        while (k < n && usedItem[itemOrder[k]]) k++;
+        if (k >= n) {
+          // No free items remain
+          if (chosenIdxArr.length > bestCount) {
+            bestCount = chosenIdxArr.length;
+            bestIdx = chosenIdxArr.slice();
+          }
+          // If we achieved theoretical max, we can stop entirely
+          if (bestCount >= Math.floor(n/3)) return true;
+          return false;
+        }
+        const item = itemOrder[k];
+
+        // Branch: try each candidate triple covering this item
+        const candList = incid[item];
+        // Heuristic: sort by increasing overlap (prefer triples that use rarer items)
+        const scored = candList.map(ci => {
+          const [a,b,c] = candTriples[ci];
+          return { ci, score: incid[a].length + incid[b].length + incid[c].length };
+        }).sort((x,y)=>x.score - y.score);
+
+        let foundOptimal = false;
+        for (let s = 0; s < scored.length; s++) {
+          if (timeUp()) break;
+          const ci = scored[s].ci;
+          if (bannedTriple[ci]) continue;
+          if (!canPlaceTriple(ci)) continue;
+          // Choose
+          markTriple(ci, 1);
+          chosenIdxArr.push(ci);
+          // Recurse
+          const stop = dfs(k + 1, chosenIdxArr);
+          // Unchoose
+          chosenIdxArr.pop();
+          markTriple(ci, 0);
+          if (stop && bestCount === theoMax) { foundOptimal = true; break; }
+        }
+
+        // Branch: exclude all triples containing this item (i.e., leave item unused)
+        // This often helps when the item is hard to match.
+        const saved = [];
+        for (const ci of candList) { if (!bannedTriple[ci]) { bannedTriple[ci] = 1; saved.push(ci); } }
+        const stop2 = dfs(k + 1, chosenIdxArr);
+        for (const ci of saved) bannedTriple[ci] = 0;
+        if (stop2 && bestCount === theoMax) foundOptimal = true;
+
+        return foundOptimal;
+      }
+
+      // Seed used marks with incumbent (so search can prune early if they conflict)
+      // We don't lock them; this is only for computing a good initial bound.
+      // So we run DFS with empty chosen set but bestCount set to incumbent size.
+      dfs(0, []);
+
+      const timeMs = (performance.now ? performance.now() : Date.now()) - t0;
+      optimal = (bestCount === theoMax) && !enumTrunc; // only claim optimal if we hit theoretical max and enumeration wasn't truncated
+      return { bestIdx, optimal, visited, timeMs, candCount: m, enumTruncated: enumTrunc };
+    }
+
+    // Multi-pass optimizer + exact solver to maximize number of triples
+    function generateTriples(items, avgMin = 6.95, avgMax = 7.05) {
+      const lower = avgMin * 3;
+      const upper = avgMax * 3;
+      const base = items.map(x => ({ serial: x.serial, value: x.value }));
+      const theoMax = Math.floor(base.length / 3);
+
+      let greedyBest = { triples: [], leftovers: base.slice() };
+      let bestMeta = { attempts: 0, strategy: 'none' };
+
+      function consider(candidate, strategyName) {
+        bestMeta.attempts++;
+        if (candidate.triples.length > greedyBest.triples.length) {
+          greedyBest = candidate; bestMeta.strategy = strategyName; return;
+        }
+        if (candidate.triples.length === greedyBest.triples.length) {
+          const leftA = candidate.leftovers.length, leftB = greedyBest.leftovers.length;
+          if (leftA < leftB) { greedyBest = candidate; bestMeta.strategy = strategyName; return; }
+          if (leftA === leftB) {
+            const center = (lower + upper) / 2;
+            const dev = (tr) => Math.abs(tr.reduce((s,x)=>s+x.value,0) - center);
+            const score = (res) => res.triples.reduce((s,tr)=>s + dev(tr), 0);
+            if (score(candidate) < score(greedyBest)) { greedyBest = candidate; bestMeta.strategy = strategyName; }
+          }
+        }
+      }
+
+      // Deterministic orderings for greedy baseline
+      const orderings = buildOrderings(base);
+      const names = ['asc', 'desc', 'interleave', 'middle-out'];
+      for (let i = 0; i < orderings.length; i++) {
+        const res = greedyTriplesFromOrdered(orderings[i], lower, upper);
+        consider(res, names[i]);
+      }
+
+      // Random shuffles within a time budget and capped attempts
+      const start = Date.now();
+      const GREEDY_TIME_BUDGET_MS = 150; // keep short; exact solver will do the heavy lifting
+      const MAX_ATTEMPTS = 48;
+      for (let k = 0; k < MAX_ATTEMPTS; k++) {
+        if (Date.now() - start > GREEDY_TIME_BUDGET_MS) break;
+        const res = greedyTriplesFromOrdered(shuffled(base), lower, upper);
+        consider(res, `rand#${k+1}`);
+        if (greedyBest.triples.length >= theoMax) break; // can't beat theoretical max
+      }
+
+      // If greedy already optimal by count, return
+      if (greedyBest.triples.length >= theoMax) {
+        greedyBest.lower = lower; greedyBest.upper = upper; greedyBest.attempts = bestMeta.attempts; greedyBest.strategy = bestMeta.strategy;
+        greedyBest.optimal = true; greedyBest.provenK = greedyBest.triples.length; greedyBest.timeMs = 0; greedyBest.candidates = 0;
+        return greedyBest;
+      }
+
+      // Map greedy result to indices for seeding exact solver
+      const indexBySerial = new Map(base.map((x, i) => [x.serial, i]));
+      const greedyIdx = greedyBest.triples.map(tr => tr.map(x => indexBySerial.get(x.serial))).filter(t => t.every(i => i !== undefined));
+
+      // Run exact/near-exact solver with a moderate time budget
+      const SOLVER_TIME_BUDGET_MS = 800; // tweakable
+      const CAND_CAP = 100000; // cap candidate triples to avoid explosion
+      const solved = solveMaxTriples(base, lower, upper, greedyIdx, SOLVER_TIME_BUDGET_MS, CAND_CAP);
+
+      // Build final triples from indices if solver improved
+      let finalTriplesIdx = greedyIdx;
+      let optimal = false;
+      if (solved.bestIdx.length > greedyIdx.length) {
+        finalTriplesIdx = solved.bestIdx;
+      }
+      optimal = solved.optimal;
+
+      // Convert indices to triples objects
+      const used = new Array(base.length).fill(false);
+      const triplesOut = finalTriplesIdx.map(t => {
+        used[t[0]] = used[t[1]] = used[t[2]] = true;
+        return t.map(i => ({ serial: base[i].serial, value: base[i].value }));
+      });
+      const leftovers = base.map((x, i) => ({...x, i})).filter((_, i) => !used[i]).map(({serial, value}) => ({serial, value}));
+
+      const result = { triples: triplesOut, leftovers };
+      result.lower = lower; result.upper = upper; result.attempts = bestMeta.attempts; result.strategy = bestMeta.strategy;
+      result.optimal = optimal; result.provenK = triplesOut.length; result.timeMs = solved.timeMs; result.candidates = solved.candCount; result.enumTruncated = solved.enumTruncated;
+      return result;
     }
 
     function formatResults(parsed, result) {
       const lines = [];
       lines.push(`Triples formed: ${result.triples.length}`);
+      if (typeof result.attempts === 'number' && result.strategy) {
+        lines.push(`Greedy attempts: ${result.attempts} | Best greedy strategy: ${result.strategy}`);
+      }
+      if (typeof result.optimal === 'boolean') {
+        if (result.optimal) {
+          lines.push(`Exact solver: PROVEN OPTIMAL (K=${result.provenK}).`);
+        } else {
+          const tms = typeof result.timeMs === 'number' ? `${Math.round(result.timeMs)} ms` : 'n/a';
+          const cand = typeof result.candidates === 'number' ? result.candidates : 'n/a';
+          const trunc = result.enumTruncated ? 'yes' : 'no';
+          lines.push(`Exact solver: best found within time budget (K=${result.provenK}). Time: ${tms} | candidates: ${cand} | enum truncated: ${trunc}`);
+        }
+      }
       if (parsed.items.length < 3) {
         lines.push('\n' + 'Not enough items to form a triple.');
       }
