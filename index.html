@@ -180,11 +180,9 @@
       return { items: result, ignored, unique: result.length };
     }
 
-    function generateTriples(items, avgMin = 6.95, avgMax = 7.05) {
-      const lower = avgMin * 3;
-      const upper = avgMax * 3;
-      // Clone and sort ascending by value
-      const arr = items.map((x, idx) => ({ ...x, idx, used: false })).sort((a,b) => a.value - b.value);
+    // Core greedy builder given a pre-ordered array of items
+    function greedyTriplesFromOrdered(orderedItems, lower, upper) {
+      const arr = orderedItems.map((x, idx) => ({ ...x, idx, used: false }));
       const triples = [];
 
       function nextLeft(start) {
@@ -227,12 +225,101 @@
 
       const leftovers = arr.filter(x => !x.used).map(({serial, value}) => ({serial, value}));
       const triplesOut = triples.map(tr => tr.map(({serial, value}) => ({serial, value})));
-      return { triples: triplesOut, leftovers, lower, upper };
+      return { triples: triplesOut, leftovers };
+    }
+
+    // Utility: shuffle copy
+    function shuffled(items, rng) {
+      const a = items.slice();
+      for (let i = a.length - 1; i > 0; i--) {
+        const j = Math.floor((rng ? rng() : Math.random()) * (i + 1));
+        [a[i], a[j]] = [a[j], a[i]];
+      }
+      return a;
+    }
+
+    // Build several orderings to try
+    function buildOrderings(items) {
+      const asc = items.slice().sort((a,b) => a.value - b.value);
+      const desc = items.slice().sort((a,b) => b.value - a.value);
+      // Interleave low-high-low-high ...
+      const inter = [];
+      let l = 0, r = asc.length - 1;
+      while (l <= r) {
+        if (l === r) { inter.push(asc[l]); break; }
+        inter.push(asc[l++]);
+        inter.push(asc[r--]);
+      }
+      // Middle-out from asc
+      const midOut = [];
+      const n = asc.length;
+      let left = Math.floor((n - 1) / 2);
+      let right = left + 1;
+      while (left >= 0 || right < n) {
+        if (left >= 0) midOut.push(asc[left--]);
+        if (right < n) midOut.push(asc[right++]);
+      }
+      return [asc, desc, inter, midOut];
+    }
+
+    // Multi-pass optimizer to maximize number of triples
+    function generateTriples(items, avgMin = 6.95, avgMax = 7.05) {
+      const lower = avgMin * 3;
+      const upper = avgMax * 3;
+      const base = items.map(x => ({ serial: x.serial, value: x.value }));
+
+      let best = { triples: [], leftovers: base.slice() };
+      let bestMeta = { attempts: 0, strategy: 'none' };
+
+      function consider(candidate, strategyName) {
+        bestMeta.attempts++;
+        if (candidate.triples.length > best.triples.length) {
+          best = candidate; bestMeta.strategy = strategyName; return;
+        }
+        if (candidate.triples.length === best.triples.length) {
+          // Tie-breaker: fewer leftovers, then smaller total deviation from target band center
+          const leftA = candidate.leftovers.length, leftB = best.leftovers.length;
+          if (leftA < leftB) { best = candidate; bestMeta.strategy = strategyName; return; }
+          if (leftA === leftB) {
+            const center = (lower + upper) / 2;
+            const dev = (tr) => Math.abs(tr.reduce((s,x)=>s+x.value,0) - center);
+            const score = (res) => res.triples.reduce((s,tr)=>s + dev(tr), 0);
+            if (score(candidate) < score(best)) { best = candidate; bestMeta.strategy = strategyName; }
+          }
+        }
+      }
+
+      // Deterministic orderings
+      const orderings = buildOrderings(base);
+      const names = ['asc', 'desc', 'interleave', 'middle-out'];
+      for (let i = 0; i < orderings.length; i++) {
+        const res = greedyTriplesFromOrdered(orderings[i], lower, upper);
+        consider(res, names[i]);
+      }
+
+      // Random shuffles within a time budget and capped attempts
+      const start = Date.now();
+      const TIME_BUDGET_MS = 200; // soft limit
+      const MAX_ATTEMPTS = 64;
+      for (let k = 0; k < MAX_ATTEMPTS; k++) {
+        if (Date.now() - start > TIME_BUDGET_MS) break;
+        const res = greedyTriplesFromOrdered(shuffled(base), lower, upper);
+        consider(res, `rand#${k+1}`);
+        // Early stop if we reached theoretical max
+        if (best.triples.length * 3 >= base.length) break;
+      }
+
+      // Attach metadata for display (non-breaking for existing UI)
+      best.lower = lower; best.upper = upper; best.attempts = bestMeta.attempts; best.strategy = bestMeta.strategy;
+      return best;
     }
 
     function formatResults(parsed, result) {
       const lines = [];
       lines.push(`Triples formed: ${result.triples.length}`);
+      if (typeof result.attempts === 'number' && result.strategy) {
+        lines.push(`Optimization attempts: ${result.attempts} | Best strategy: ${result.strategy}`);
+      }
       if (parsed.items.length < 3) {
         lines.push('\n' + 'Not enough items to form a triple.');
       }
