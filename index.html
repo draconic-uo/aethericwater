@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>aP Triple Grouper</title>
+  <style>
+    :root {
+      --bg: #0f172a; /* slate-900 */
+      --panel: #111827; /* gray-900 */
+      --text: #e5e7eb; /* gray-200 */
+      --muted: #9ca3af; /* gray-400 */
+      --accent: #22c55e; /* green-500 */
+      --warn: #f59e0b; /* amber-500 */
+      --error: #ef4444; /* red-500 */
+      --border: #1f2937; /* gray-800 */
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+      background: linear-gradient(180deg, #0b1022, #0f172a);
+      color: var(--text);
+      min-height: 100vh;
+    }
+    .container {
+      max-width: 1000px;
+      margin: 24px auto;
+      padding: 16px;
+    }
+    h1 { font-size: 1.5rem; margin: 0 0 12px 0; }
+    p { color: var(--muted); margin-top: 0; }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+    }
+    textarea {
+      width: 100%;
+      min-height: 220px;
+      resize: vertical;
+      background: #0b1222;
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      line-height: 1.4;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    }
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+      align-items: center;
+    }
+    button {
+      background: var(--accent);
+      color: #052e16;
+      border: none;
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    button.secondary { background: #1f2937; color: var(--text); border: 1px solid var(--border); }
+    .inline { display: inline-flex; align-items: center; gap: 8px; }
+    .small { font-size: 0.875rem; color: var(--muted); }
+    .output {
+      margin-top: 16px;
+      white-space: pre-wrap;
+      background: #0b1222;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      max-height: 420px;
+      overflow: auto;
+    }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; background: #1f2937; color: var(--text); border: 1px solid var(--border); }
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .grid { display: grid; grid-template-columns: 1fr; gap: 12px; }
+    @media (min-width: 700px) { .grid { grid-template-columns: 1fr 1fr; } }
+    .err { color: var(--error); }
+    .warn { color: var(--warn); }
+    code { background: #111827; padding: 2px 6px; border-radius: 6px; border: 1px solid var(--border); }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>aP Triple Grouper</h1>
+    <p>Paste your lines below. On submit, the app will extract the numeric value between <code>water:</code> and <code>aP</code>, and the trailing serial number at the end of each line. It will then generate as many disjoint triples as possible where the average aP is in the range [6.95, 7.05].</p>
+
+    <div class="grid">
+      <div class="panel">
+        <label for="input" class="small">Input</label>
+        <textarea id="input" placeholder="[11/10/2025 18:16]  [Razor]: aetheric water: 3.796 aP (expires in 1d 21h 16m) [bound to User] 1205504802
+[11/10/2025 18:16]  [Razor]: aetheric water: 10.681 aP (expires in 1d 13h 56m) [bound to User] 1179412924
+[11/10/2025 18:16]  [Razor]: aetheric water: 10.282 aP (expires in 1d 16h 54m) [bound to User] 1188855198"></textarea>
+        <div class="controls">
+          <div class="inline small">
+            Target average:
+            <input id="avgMin" type="number" step="0.001" value="6.95" style="width: 90px; background:#0b1222; color:var(--text); border:1px solid var(--border); border-radius:6px; padding:6px;"/>
+            to
+            <input id="avgMax" type="number" step="0.001" value="7.05" style="width: 90px; background:#0b1222; color:var(--text); border:1px solid var(--border); border-radius:6px; padding:6px;"/>
+          </div>
+          <button id="submit">Generate Triples</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="row small" style="justify-content: space-between;">
+          <div>
+            <span id="stats" class="badge">Parsed: 0 | Ignored: 0 | Unique serials: 0</span>
+          </div>
+          <div>
+            <span class="small">Sum range per triple is computed as <code>avgMin*3</code> to <code>avgMax*3</code>.</span>
+          </div>
+        </div>
+        <div id="output" class="output">Results will appear here.</div>
+      </div>
+    </div>
+
+
+    <div class="panel" id="scriptPanel2">
+      <div class="row" style="justify-content: space-between; align-items: center; margin-bottom: 8px;">
+        <div class="inline small">
+          <button id="prevSet2" class="secondary" title="Previous set">⟵</button>
+          <span id="setCounter2" class="badge">Set 0 of 0</span>
+          <button id="nextSet2" class="secondary" title="Next set">⟶</button>
+        </div>
+        <div class="inline small">
+          <button id="copyScript2" class="secondary" title="Copy current script">Copy Script</button>
+        </div>
+      </div>
+      <label class="small" style="display:block; margin-bottom:4px;">Manual copy for each set</label>
+      <label class="small" for="scriptText2">Generated gump script for the current triple</label>
+      <textarea id="scriptText2" readonly style="min-height: 240px;"></textarea>
+    </div>
+
+    <div class="panel" id="scriptPanel3" style="margin-top: 16px;">
+      <div class="row" style="justify-content: space-between; align-items: center; margin-bottom: 8px;">
+        <div class="inline small">
+          <span class="badge">All Sets Combined</span>
+        </div>
+        <div class="inline small">
+          <button id="copyScript3" class="secondary" title="Copy combined script">Copy Combined Script</button>
+        </div>
+      </div>
+      <label class="small" style="display:block; margin-bottom:4px;">FULL-AUTO TURN IN</label>
+      <label class="small" for="scriptText3">Combined gump scripts for all triples (with IF/ELSE/ENDIF between sets)</label>
+      <textarea id="scriptText3" readonly style="min-height: 280px;"></textarea>
+    </div>
+  </div>
+
+  <script>
+    function parseInput(text) {
+      const lines = text.split(/\r?\n/);
+      const result = [];
+      let ignored = 0;
+      // Regex captures: value between 'water:' and 'aP', and the last integer at end of line as serial
+      const rx = /water:\s*([0-9]+(?:\.[0-9]+)?)\s*aP[\s\S]*?(\d+)\s*$/i;
+      const seenSerials = new Set();
+      for (const line of lines) {
+        if (!line.trim()) { continue; }
+        const m = line.match(rx);
+        if (!m) { ignored++; continue; }
+        const value = parseFloat(m[1]);
+        const serial = m[2];
+        if (Number.isFinite(value)) {
+          if (!seenSerials.has(serial)) {
+            result.push({ serial, value });
+            seenSerials.add(serial);
+          }
+        } else {
+          ignored++;
+        }
+      }
+      return { items: result, ignored, unique: result.length };
+    }
+
+    function generateTriples(items, avgMin = 6.95, avgMax = 7.05) {
+      const lower = avgMin * 3;
+      const upper = avgMax * 3;
+      // Clone and sort ascending by value
+      const arr = items.map((x, idx) => ({ ...x, idx, used: false })).sort((a,b) => a.value - b.value);
+      const triples = [];
+
+      function nextLeft(start) {
+        for (let i = start; i < arr.length; i++) if (!arr[i].used) return i;
+        return -1;
+      }
+      function prevRight(start) {
+        for (let i = start; i >= 0; i--) if (!arr[i].used) return i;
+        return -1;
+      }
+
+      while (true) {
+        let madeOne = false;
+        let i = nextLeft(0);
+        while (i !== -1 && !madeOne) {
+          const ai = arr[i];
+          if (ai.used) { i = nextLeft(i+1); continue; }
+          let l = nextLeft(i + 1);
+          let r = prevRight(arr.length - 1);
+          while (l !== -1 && r !== -1 && l < r) {
+            if (arr[l].used) { l = nextLeft(l + 1); continue; }
+            if (arr[r].used) { r = prevRight(r - 1); continue; }
+            const sum = ai.value + arr[l].value + arr[r].value;
+            if (sum >= lower && sum <= upper) {
+              ai.used = arr[l].used = arr[r].used = true;
+              triples.push([ai, arr[l], arr[r]]);
+              madeOne = true;
+              break;
+            }
+            if (sum < lower) {
+              l = nextLeft(l + 1);
+            } else {
+              r = prevRight(r - 1);
+            }
+          }
+          i = nextLeft(i + 1);
+        }
+        if (!madeOne) break;
+      }
+
+      const leftovers = arr.filter(x => !x.used).map(({serial, value}) => ({serial, value}));
+      const triplesOut = triples.map(tr => tr.map(({serial, value}) => ({serial, value})));
+      return { triples: triplesOut, leftovers, lower, upper };
+    }
+
+    function formatResults(parsed, result) {
+      const lines = [];
+      lines.push(`Triples formed: ${result.triples.length}`);
+      if (parsed.items.length < 3) {
+        lines.push('\n' + 'Not enough items to form a triple.');
+      }
+      lines.push(`Parsed items: ${parsed.items.length} | Unique serials: ${parsed.unique} | Ignored lines: ${parsed.ignored}`);
+      lines.push(`Allowed sum range per triple: [${result.lower.toFixed(2)}, ${result.upper.toFixed(2)}]`);
+      lines.push('');
+
+      result.triples.forEach((tr, idx) => {
+        const sum = tr.reduce((s, x) => s + x.value, 0);
+        const avg = sum / 3;
+        const list = tr.map(x => `${x.serial} (${x.value})`).join('  |  ');
+        lines.push(`#${idx + 1} — sum=${sum.toFixed(3)}, avg=${avg.toFixed(3)} -> ${list}`);
+      });
+
+      if (result.triples.length === 0) {
+        lines.push('\nNo valid triples could be formed in the specified range. Try widening the range slightly.');
+      }
+
+      if (result.leftovers.length) {
+        lines.push('\nLeftover items (unused):');
+        lines.push(result.leftovers.map(x => `${x.serial} (${x.value})`).join('\n'));
+      }
+
+      return lines.join('\n');
+    }
+
+    function toJSON(result) {
+      return JSON.stringify({
+        triples: result.triples,
+        leftovers: result.leftovers
+      }, null, 2);
+    }
+
+    function toCSV(result) {
+      const rows = [];
+      rows.push(['triple_index','serial','value'].join(','));
+      result.triples.forEach((tr, i) => {
+        tr.forEach(x => rows.push([i+1, x.serial, x.value].join(',')));
+      });
+      if (result.leftovers.length) {
+        rows.push(['leftover', '', ''].join(','));
+        result.leftovers.forEach(x => rows.push(['', x.serial, x.value].join(',')));
+      }
+      return rows.join('\n');
+    }
+
+    function copy(text) {
+      navigator.clipboard.writeText(text).then(() => {
+        const btn = document.getElementById('copyJson');
+      }).catch(() => {});
+    }
+
+    const inputEl = document.getElementById('input');
+    const outEl = document.getElementById('output');
+    const statsEl = document.getElementById('stats');
+    const avgMinEl = document.getElementById('avgMin');
+    const avgMaxEl = document.getElementById('avgMax');
+
+    // Second panel elements
+    const scriptTextEl2 = document.getElementById('scriptText2');
+    const setCounterEl2 = document.getElementById('setCounter2');
+    const prevSetBtn2 = document.getElementById('prevSet2');
+    const nextSetBtn2 = document.getElementById('nextSet2');
+    const copyScriptBtn2 = document.getElementById('copyScript2');
+
+    // Third panel elements (combined script)
+    const scriptTextEl3 = document.getElementById('scriptText3');
+    const copyScriptBtn3 = document.getElementById('copyScript3');
+
+    const SCRIPT_PREFIX = "overhead 'target container'\n@setvar! c\ndclick c\nwait 600\n\n# Clean Up\n@clearignore\n@unsetvar aethericWater\n@unsetvar itemSerial\n\n@createlist itemSerials\n@clearlist itemSerials";
+    const SCRIPT_SUFFIX = "foreach itemSerial in itemSerials\n    if find itemSerial c as aethericWater\n        lift aethericWater\n        drop backpack -1 -1 -1\n        wait 600\n    endif\nendfor";
+
+    function buildScriptForSerials(s1, s2, s3) {
+      // Keep exact formatting with blank lines as in the template
+      return `${SCRIPT_PREFIX}\n\n@pushlist itemSerials ${s1}\n@pushlist itemSerials ${s2}\n@pushlist itemSerials ${s3}\n\n\n${SCRIPT_SUFFIX}`;
+    }
+
+    // Gump second script template builder - keep waitforgump constant (1254405336) and replace 'target water' with the triple's serials
+    function buildGumpScriptForSerials(s1, s2, s3) {
+      return `menu 0x30C189 1\nwait 500\n\nwaitforgump 1254405336\ngumpresponse 2\nwft 500\ntarget ${s1}\nwait 200\n\nwaitforgump 1254405336\ngumpresponse 3\nwft 500\ntarget ${s2}\nwait 200\n\nwaitforgump 1254405336\ngumpresponse 4\nwft 500\ntarget ${s3}\nwait 200`;
+    }
+
+    // IF/ELSE/ENDIF block to insert between gump scripts
+    const IF_ELSE_BLOCK = "if ingump '+75' 1254405336\n    overhead 'YAY'\n    wait 2000\n    gumpresponse 5\n    waitforgump 1254405336\n    gumpclose 1254405336\nelse \n    wait 500\n    gumpclose 1254405336\nendif";
+
+    // Build one combined script that, for each triple, includes ONLY:
+    // - The gump script (panel #2) with the triple's serials
+    // Insert the IF/ELSE/ENDIF block between each set, and also append one at the very end
+    function buildCombinedGumpScripts(triples) {
+      if (!Array.isArray(triples) || !triples.length) return '';
+      const parts = [];
+      for (let i = 0; i < triples.length; i++) {
+        const tr = triples[i];
+        if (!tr || tr.length < 3) continue;
+        const s1 = tr[0].serial, s2 = tr[1].serial, s3 = tr[2].serial;
+        // Gump script only
+        parts.push(buildGumpScriptForSerials(s1, s2, s3));
+        // IF/ELSE/ENDIF between sets
+        if (i < triples.length - 1) parts.push(IF_ELSE_BLOCK);
+      }
+      // Also append IF/ELSE/ENDIF at the end of the combined script
+      parts.push(IF_ELSE_BLOCK);
+      return parts.join('\n\n');
+    }
+
+    let currentIndex = 0;
+
+    function refreshScriptPanel2() {
+      const triples = (window.__lastTriples || []);
+      const n = triples.length;
+      if (!setCounterEl2) return;
+      if (n === 0) {
+        setCounterEl2.textContent = 'Set 0 of 0';
+        if (scriptTextEl2) scriptTextEl2.value = 'No triples available. Generate triples to see scripts.';
+        if (prevSetBtn2) prevSetBtn2.disabled = true;
+        if (nextSetBtn2) nextSetBtn2.disabled = true;
+        return;
+      }
+      if (currentIndex < 0) currentIndex = 0;
+      if (currentIndex >= n) currentIndex = n - 1;
+      setCounterEl2.textContent = `Set ${currentIndex + 1} of ${n}`;
+      if (prevSetBtn2) prevSetBtn2.disabled = currentIndex === 0;
+      if (nextSetBtn2) nextSetBtn2.disabled = currentIndex === n - 1;
+      const tr = triples[currentIndex] || [];
+      if (tr.length < 3) {
+        if (scriptTextEl2) scriptTextEl2.value = 'Invalid triple.';
+        return;
+      }
+      const s1 = tr[0].serial, s2 = tr[1].serial, s3 = tr[2].serial;
+      if (scriptTextEl2) scriptTextEl2.value = buildGumpScriptForSerials(s1, s2, s3);
+    }
+
+    function refreshScriptPanel3() {
+      const triples = (window.__lastTriples || []);
+      if (!scriptTextEl3) return;
+      if (!triples.length) {
+        scriptTextEl3.value = 'No triples available. Generate triples to see combined script.';
+        return;
+      }
+      scriptTextEl3.value = buildCombinedGumpScripts(triples);
+    }
+
+    function run() {
+      const avgMin = parseFloat(avgMinEl.value);
+      const avgMax = parseFloat(avgMaxEl.value);
+      if (!(Number.isFinite(avgMin) && Number.isFinite(avgMax) && avgMin > 0 && avgMax >= avgMin)) {
+        outEl.innerHTML = '<span class="err">Invalid average range.</span>';
+        return;
+      }
+      const parsed = parseInput(inputEl.value);
+      statsEl.textContent = `Parsed: ${parsed.items.length} | Ignored: ${parsed.ignored} | Unique serials: ${parsed.unique}`;
+      const result = generateTriples(parsed.items, avgMin, avgMax);
+      outEl.textContent = formatResults(parsed, result);
+      // Store last result for copy buttons
+      window.__lastResult = result;
+      // Store triples and refresh script panel
+      window.__lastTriples = result.triples || [];
+      currentIndex = 0;
+      refreshScriptPanel2();
+      refreshScriptPanel3();
+    }
+
+    document.getElementById('submit').addEventListener('click', run);
+
+    // Listeners for second panel
+    if (prevSetBtn2) prevSetBtn2.addEventListener('click', () => {
+      const triples = window.__lastTriples || [];
+      if (!triples.length) return;
+      if (currentIndex > 0) { currentIndex--; refreshScriptPanel2(); }
+    });
+    if (nextSetBtn2) nextSetBtn2.addEventListener('click', () => {
+      const triples = window.__lastTriples || [];
+      if (!triples.length) return;
+      if (currentIndex < triples.length - 1) { currentIndex++; refreshScriptPanel2(); }
+    });
+    if (copyScriptBtn2) copyScriptBtn2.addEventListener('click', () => {
+      if (scriptTextEl2 && scriptTextEl2.value) navigator.clipboard.writeText(scriptTextEl2.value);
+    });
+
+    // Copy for third panel
+    if (copyScriptBtn3) copyScriptBtn3.addEventListener('click', () => {
+      if (scriptTextEl3 && scriptTextEl3.value) navigator.clipboard.writeText(scriptTextEl3.value);
+    });
+
+    // Initialize script panels
+    refreshScriptPanel2();
+    refreshScriptPanel3();
+  </script>
+</body>
+</html>
