@@ -745,7 +745,7 @@
         setTimeout(() => {
           try {
             // Run full optimization 100 times and pick the best
-            const result = multiRunOptimize(parsed.items, avgMin, avgMax, 100);
+            const result = multiRunOptimize(parsed.items, avgMin, avgMax, 1000);
             outEl.textContent = formatResults(parsed, result);
             // Store last result for copy buttons
             window.__lastResult = result;
@@ -801,3 +801,4 @@
   </script>
 </body>
 </html>
+
