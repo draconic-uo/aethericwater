@@ -106,6 +106,7 @@
             <input id="avgMax" type="number" step="0.001" value="7.05" style="width: 90px; background:#0b1222; color:var(--text); border:1px solid var(--border); border-radius:6px; padding:6px;"/>
           </div>
           <button id="submit">Generate Triples</button>
+          <span id="busy" class="badge" style="display:none;">Processing…</span>
         </div>
       </div>
 
@@ -433,7 +434,8 @@
 
       const timeMs = (performance.now ? performance.now() : Date.now()) - t0;
       optimal = (bestCount === theoMax) && !enumTrunc; // only claim optimal if we hit theoretical max and enumeration wasn't truncated
-      return { bestIdx, optimal, visited, timeMs, candCount: m, enumTruncated: enumTrunc };
+      const bestTriplesIdx = bestIdx.map(ci => candTriples[ci]);
+      return { bestIdx, bestTriplesIdx, optimal, visited, timeMs, candCount: m, enumTruncated: enumTrunc };
     }
 
     // Multi-pass optimizer + exact solver to maximize number of triples
@@ -501,10 +503,12 @@
       // Build final triples from indices if solver improved
       let finalTriplesIdx = greedyIdx;
       let optimal = false;
-      if (solved.bestIdx.length > greedyIdx.length) {
-        finalTriplesIdx = solved.bestIdx;
+      if (Array.isArray(solved.bestTriplesIdx) && solved.bestTriplesIdx.length > greedyIdx.length) {
+        finalTriplesIdx = solved.bestTriplesIdx;
       }
       optimal = solved.optimal;
+      // Validate shape: ensure array of index triplets
+      finalTriplesIdx = (Array.isArray(finalTriplesIdx) ? finalTriplesIdx : []).filter(t => Array.isArray(t) && t.length === 3 && t.every(i => Number.isInteger(i) && i >= 0 && i < base.length));
 
       // Convert indices to triples objects
       const used = new Array(base.length).fill(false);
@@ -520,9 +524,48 @@
       return result;
     }
 
+    // Compare two results and return the better one based on triples, leftovers, and deviation from center
+    function isBetterResult(a, b) {
+      if (!b) return true;
+      if (!a) return false;
+      if (a.triples.length !== b.triples.length) return a.triples.length > b.triples.length;
+      if (a.leftovers.length !== b.leftovers.length) return a.leftovers.length < b.leftovers.length;
+      const center = ((a.lower || 0) + (a.upper || 0)) / 2 || 0;
+      const devSum = (res) => res.triples.reduce((s, tr) => s + Math.abs(tr.reduce((t, x) => t + x.value, 0) - center), 0);
+      return devSum(a) < devSum(b);
+    }
+
+    // Run the full optimization process multiple times and return the best result
+    function multiRunOptimize(items, avgMin = 6.95, avgMax = 7.05, runs = 10) {
+      const theoMax = Math.floor(items.length / 3);
+      let best = null;
+      let minK = Infinity, maxK = -Infinity;
+      let runsExecuted = 0;
+      let earlyStop = false;
+      for (let i = 0; i < runs; i++) {
+        const r = generateTriples(items, avgMin, avgMax);
+        runsExecuted = i + 1;
+        const k = r.triples.length;
+        if (k < minK) minK = k;
+        if (k > maxK) maxK = k;
+        if (!best || isBetterResult(r, best)) best = r;
+        if (r.optimal && k === theoMax) { earlyStop = true; break; }
+      }
+      if (!best) {
+        best = { triples: [], leftovers: [], lower: avgMin*3, upper: avgMax*3 };
+      }
+      best.multiRun = { runsExecuted, minK: isFinite(minK) ? minK : 0, maxK: isFinite(maxK) ? maxK : 0, bestK: best.triples.length, earlyStop };
+      return best;
+    }
+
     function formatResults(parsed, result) {
       const lines = [];
       lines.push(`Triples formed: ${result.triples.length}`);
+      if (result.multiRun) {
+        const mr = result.multiRun;
+        const early = mr.earlyStop ? 'yes' : 'no';
+        lines.push(`Multi-run: ${mr.runsExecuted} runs | best=${mr.bestK} | range=${mr.minK}-${mr.maxK} | early-stop: ${early}`);
+      }
       if (typeof result.attempts === 'number' && result.strategy) {
         lines.push(`Greedy attempts: ${result.attempts} | Best greedy strategy: ${result.strategy}`);
       }
@@ -593,6 +636,8 @@
     const statsEl = document.getElementById('stats');
     const avgMinEl = document.getElementById('avgMin');
     const avgMaxEl = document.getElementById('avgMax');
+    const submitBtn = document.getElementById('submit');
+    const busyEl = document.getElementById('busy');
 
     // Second panel elements
     const scriptTextEl2 = document.getElementById('scriptText2');
@@ -679,23 +724,53 @@
     }
 
     function run() {
-      const avgMin = parseFloat(avgMinEl.value);
-      const avgMax = parseFloat(avgMaxEl.value);
-      if (!(Number.isFinite(avgMin) && Number.isFinite(avgMax) && avgMin > 0 && avgMax >= avgMin)) {
-        outEl.innerHTML = '<span class="err">Invalid average range.</span>';
-        return;
+      // Read and normalize hidden average inputs; fallback to defaults if invalid
+      let avgMin = parseFloat(avgMinEl.value);
+      let avgMax = parseFloat(avgMaxEl.value);
+      if (!Number.isFinite(avgMin)) { avgMin = 6.95; avgMinEl.value = '6.95'; }
+      if (!Number.isFinite(avgMax)) { avgMax = 7.05; avgMaxEl.value = '7.05'; }
+      if (!(avgMin > 0 && avgMax >= avgMin)) {
+        avgMin = 6.95; avgMax = 7.05; avgMinEl.value = '6.95'; avgMaxEl.value = '7.05';
       }
+
       const parsed = parseInput(inputEl.value);
-      statsEl.textContent = `Parsed: ${parsed.items.length} | Ignored: ${parsed.ignored} | Unique serials: ${parsed.unique}`;
-      const result = generateTriples(parsed.items, avgMin, avgMax);
-      outEl.textContent = formatResults(parsed, result);
-      // Store last result for copy buttons
-      window.__lastResult = result;
-      // Store triples and refresh script panel
-      window.__lastTriples = result.triples || [];
-      currentIndex = 0;
-      refreshScriptPanel2();
-      refreshScriptPanel3();
+      // Show processing indicator and disable button
+      if (statsEl) statsEl.textContent = `Parsed: ${parsed.items.length} | Ignored: ${parsed.ignored} | Unique serials: ${parsed.unique} (working…)`;
+      if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Processing…'; }
+      if (busyEl) busyEl.style.display = 'inline-block';
+
+      // Defer heavy work so the UI can paint the busy state.
+      // Use rAF to ensure a frame is rendered, then queue work on a macrotask.
+      requestAnimationFrame(() => {
+        setTimeout(() => {
+          try {
+            // Run full optimization 100 times and pick the best
+            const result = multiRunOptimize(parsed.items, avgMin, avgMax, 100);
+            outEl.textContent = formatResults(parsed, result);
+            // Store last result for copy buttons
+            window.__lastResult = result;
+            // Store triples and refresh script panel
+            window.__lastTriples = result.triples || [];
+            currentIndex = 0;
+            refreshScriptPanel2();
+            refreshScriptPanel3();
+          } catch (err) {
+            console.error('Error during optimization:', err);
+            outEl.innerHTML = `<span class="err">An error occurred while generating triples: ${err && err.message ? err.message : err}</span>`;
+            window.__lastResult = { triples: [], leftovers: [] };
+            window.__lastTriples = [];
+            currentIndex = 0;
+            refreshScriptPanel2();
+            refreshScriptPanel3();
+          } finally {
+            // Hide processing indicator and re-enable button
+            if (busyEl) busyEl.style.display = 'none';
+            if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Generate Triples'; }
+            // Update stats without working tag
+            if (statsEl) statsEl.textContent = `Parsed: ${parsed.items.length} | Ignored: ${parsed.ignored} | Unique serials: ${parsed.unique}`;
+          }
+        }, 0);
+      });
     }
 
     document.getElementById('submit').addEventListener('click', run);
